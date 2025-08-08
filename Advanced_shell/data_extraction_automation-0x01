@@ -1,16 +1,22 @@
 #!/bin/bash
 
 INPUT_FILE="data.json"
-if [! -f "$INPUT_FILE" ]; then
+
+# Check if file exists
+if [ ! -f "$INPUT_FILE" ]; then
     echo "Input file '$INPUT_FILE' does not exist."
     exit 1
 fi
-name=$(jq -r '.name' "$INPUT_FILE")
-height=$(jq -r '.height' "$INPUT_FILE")
-weight=$(jq -r '.weight' "$INPUT_FILE")
-type=$(jq -r '.types[0].type.name' "$INPUT_FILE")
 
-height_m=$(echo "height / 10"|bc -l)
-weight_kg=$(echo "weight / 10"|bc -l)
+# Extract values using awk and sed
+name=$(grep -o '"name": *"[^"]*"' "$INPUT_FILE" | head -n 1 | sed 's/"name": *"\([^"]*\)"/\1/')
+height=$(grep -o '"height": *[0-9]*' "$INPUT_FILE" | sed 's/"height": *//')
+weight=$(grep -o '"weight": *[0-9]*' "$INPUT_FILE" | sed 's/"weight": *//')
+type=$(grep -o '"type": *{ *"name": *"[^"]*"' "$INPUT_FILE" | head -n 1 | sed 's/.*"name": *"\([^"]*\)".*/\1/')
 
-echo "Name: $name"
+# Convert to meters and kilograms using awk
+formatted_height=$(echo "$height" | awk '{printf "%.1f", $1/10}')
+formatted_weight=$(echo "$weight" | awk '{printf "%.1f", $1/10}')
+
+# Output
+echo "${name^} is of type ${type^}, weighs ${formatted_weight}kg, and is ${formatted_height}m tall."
