@@ -4,7 +4,7 @@
 
 OUTPUT_CSV="pokemon_report.csv"
 
-# Check if there are JSON files
+
 if ! ls *.json >/dev/null 2>&1; then
     echo "No JSON files found. Run Task 2 script first."
     exit 1
