@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -u
+# fetch_pokemon_parallel.sh
+# Fetch a list of Pokémon in parallel, saving each to <pokemon>.json.
+# Handles background processes and waits for all to complete.
+
+POKEMON_LIST=("Bulbasaur" "Ivysaur" "Venusaur" "Charmander" "Charmeleon")
+API_URL="https://pokeapi.co/api/v2/pokemon"
+CONCURRENCY=4           # max number of parallel requests
+SLEEP_WHEN_BUSY=0.5     # seconds to wait when concurrency limit is reached
+ERROR_FILE="errors.txt"
+
+# Clean previous error log
+: > "$ERROR_FILE"
+
+# Ensure we kill background children if script is interrupted
+cleanup() {
+    echo "Cleaning up background jobs..."
+    jobs -pr | xargs -r kill 2>/dev/null || true
+}
+trap cleanup INT TERM
+
+# Function to fetch one pokemon (argument: Pokemon name)
+fetch_one() {
+    local raw_name="$1"
+    local name_lc
+    name_lc=$(echo "$raw_name" | tr '[:upper:]' '[:lower:]')
+    local out_file="${name_lc}.json"
+    local tmp
+    tmp=$(mktemp) || { echo "Failed to create temp file" >>"$ERROR_FILE"; return 1; }
+
+    # Fetch (body + status code)
+    response=$(curl -s -w "%{http_code}" --retry 2 --retry-delay 1 --max-time 15 "$API_URL/$name_lc" -o "$tmp") || true
+
+    # Because we used -o, curl didn't output body; get the code another way:
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/$name_lc" || echo "000")
+
+    if [ "$http_code" = "200" ]; then
+        # quick JSON sanity check using jq if available, otherwise accept file
+        if command -v jq >/dev/null 2>&1; then
+            if jq -e . "$tmp" >/dev/null 2>&1; then
+                mv "$tmp" "$out_file"
+                echo "Saved: $out_file"
+                return 0
+            else
+                echo "Invalid JSON for $raw_name (saved in $tmp)" >> "$ERROR_FILE"
+                rm -f "$tmp"
+                return 1
+            fi
+        else
+            mv "$tmp" "$out_file"
+            echo "Saved: $out_file (jq not installed to validate JSON)"
+            return 0
+        fi
+    else
+        body_snippet=$(head -c 200 "$tmp" 2>/dev/null | tr '\n' ' ' | sed 's/"/'\''/g')
+        echo "Failed: $raw_name (HTTP $http_code). Snippet: $body_snippet" >> "$ERROR_FILE"
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# Start fetching in parallel with concurrency control
+pids=()
+for pokemon in "${POKEMON_LIST[@]}"; do
+    # Wait until the number of running jobs is < CONCURRENCY
+    while true; do
+        # jobs -rp lists PIDs of running background jobs (bash builtin)
+        running=$(jobs -rp | wc -l)
+        if [ "$running" -lt "$CONCURRENCY" ]; then
+            break
+        fi
+        sleep "$SLEEP_WHEN_BUSY"
+    done
+
+    # Start fetch in background
+    fetch_one "$pokemon" &
+    pid=$!
+    pids+=("$pid")
+    echo "Started $pokemon (pid $pid)"
+done
+
+# Wait for all background processes to finish
+echo "Waiting for ${#pids[@]} background jobs to finish..."
+fail_count=0
+for pid in "${pids[@]}"; do
+    if wait "$pid"; then
+        : # success
+    else
+        fail_count=$((fail_count + 1))
+    fi
+done
+
+echo "All fetch jobs completed. Failures: $fail_count"
+if [ -s "$ERROR_FILE" ]; then
+    echo "Some errors were logged to $ERROR_FILE"
+else
+    echo "No errors logged."
+    # remove empty error file if desired
+    # rm -f "$ERROR_FILE"
+fi
+
+exit 0
+
